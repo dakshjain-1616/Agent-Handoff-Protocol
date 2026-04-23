@@ -1,56 +1,76 @@
 # Agent Handoff Protocol
 
-> 🤖 **Autonomously built using [NEO](https://heyneo.com) — Your Autonomous AI Engineering Agent**
->
-> [![VS Code Extension](https://img.shields.io/badge/VS%20Code-NEO%20Extension-007ACC?logo=visual-studio-code&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=NeoResearchInc.heyneo) [![Cursor Extension](https://img.shields.io/badge/Cursor-NEO%20Extension-000000?logo=cursor&logoColor=white)](https://marketplace.cursorapi.com/items/?itemName=NeoResearchInc.heyneo)
-
-<p align="center">
-  <img src="assets/infographic.svg" alt="Agent Handoff Protocol Architecture" width="900" />
-</p>
+![Infographic](assets/infographic.svg)
 
 [![PyPI version](https://badge.fury.io/py/agent-handoff-protocol.svg)](https://badge.fury.io/py/agent-handoff-protocol)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A standardized protocol for passing state between agents in multi-agent AI systems. This library provides a structured way to hand off tasks, context, and intermediate results between different agents, with support for multiple popular AI frameworks.
+A lightweight, framework-agnostic Python library that defines a standard for
+passing state between agents in multi-agent systems. It ships with a typed
+`HandoffPacket`, a validator, a serializer (JSON / dict / LLM-prompt), adapters
+for the four most widely used agent frameworks (LangGraph, CrewAI, Google ADK,
+smolagents), and a persistent `HandoffBroker` backed by SQLite.
+
+---
+
+## Overview
+
+When one agent finishes its part of a task and passes control to the next,
+everything the next agent needs — context, working memory, partial outputs,
+confidence, remaining goals — has to travel with it. This library provides a
+single, typed contract for that transfer so multi-agent systems stop
+re-inventing it with ad-hoc dictionaries.
+
+Core components:
+
+- `HandoffPacket` — the typed payload (Pydantic model)
+- `HandoffValidator` — structural and semantic checks before a send
+- `PacketSerializer` — JSON, dict, and LLM-prompt round-tripping
+- `HandoffBroker` — SQLite-backed send/receive with routing metadata
+- Framework adapters — LangGraph, CrewAI, Google ADK, smolagents
 
 ## Problem Statement
 
-Building multi-agent systems is becoming increasingly common, but there's no standard way for agents to communicate and pass state to each other. Each framework has its own conventions, making it difficult to:
+Multi-agent systems are now common, but there is no shared standard for what a
+handoff contains. Each team invents its own dict shape, loses context between
+agents, cannot trace or debug handoffs, and cannot swap frameworks without
+rewriting glue code. The Agent Handoff Protocol fixes this by providing:
 
-- Build agents that can work across different frameworks
-- Debug and trace the flow of work between agents
-- Maintain context when handing off from one agent to another
-- Cache and reuse tool results across agent boundaries
+- A single typed payload that carries everything a receiver needs
+- Validation so bad handoffs fail at the sender, not at the receiver
+- Serialization formats suitable for storage, wire transfer, and LLM prompts
+- Adapters so the same packet can be dropped into any supported framework
+- A broker so agents in a running system can hand off asynchronously
 
-The Agent Handoff Protocol solves these problems by providing a standardized `HandoffPacket` structure that captures all the information needed for seamless agent-to-agent communication.
+## HandoffPacket Field Reference
 
-## Features
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `task_id` | `str` | yes | — | Unique identifier for this task |
+| `original_goal` | `str` | yes | — | The original goal / objective |
+| `completed_steps` | `list[CompletedStep]` | no | `[]` | Steps already completed |
+| `remaining_steps` | `list[str]` | no | `[]` | Steps still to do |
+| `working_memory` | `dict[str, Any]` | no | `{}` | Key-value facts for the next agent |
+| `tool_results_cache` | `dict[str, Any]` | no | `{}` | Cached tool results keyed by `tool_call_id` |
+| `confidence_score` | `float` (0-1) | no | `1.0` | Sender's confidence in its outputs |
+| `handoff_reason` | `str` | no | `""` | Why control is being handed off |
+| `context_summary` | `str` | no | `""` | 3-5 sentence summary of progress |
+| `priority` | `Priority` | no | `MEDIUM` | One of `LOW`, `MEDIUM`, `HIGH`, `CRITICAL` |
+| `created_at` | `str` (ISO) | auto | now | Creation timestamp |
+| `updated_at` | `str` (ISO) | auto | `None` | Last update timestamp |
+| `ttl_seconds` | `int` | no | `None` | Time-to-live; auto-fills `expires_at` |
+| `expires_at` | `datetime` | no | `None` | Absolute UTC expiry |
 
-- 📦 **Standardized Packet Structure**: Pydantic-based `HandoffPacket` with all essential fields
-- ✅ **Validation**: Built-in validation to ensure packets are well-formed
-- 🔄 **Serialization**: JSON, dict, and LLM-friendly prompt formats
-- 🔌 **Framework Adapters**: Native support for LangGraph, CrewAI, Google ADK, and smolagents
-- 💾 **Persistence**: SQLite-based `HandoffBroker` for reliable handoff management
-- 🧪 **Well Tested**: Comprehensive test suite with pytest
+`CompletedStep`:
 
-## ✨ New Features
-
-### TTL & Expiry
-
-Packets can carry a time-to-live. The broker skips expired packets and can purge them. Example stats output:
-
-```
-{'total': 1, 'pending': 1, 'expired': 0, 'delivered': 0}
-```
-
-### Audit Log
-
-Every broker operation records an entry in the `audit_log` table. Query it programmatically or pretty-print recent events via the CLI (Rich table when installed, plain text otherwise):
-
-```bash
-handoff-cli audit --db handoffs.db --limit 20
-handoff-cli audit --event expired
+```python
+{
+    "step_name": str,
+    "output":    str,
+    "timestamp": str,   # ISO-8601
+    "agent_name": str,
+}
 ```
 
 ## Installation
@@ -59,176 +79,164 @@ handoff-cli audit --event expired
 pip install agent-handoff-protocol
 ```
 
-### Optional Dependencies
-
-For framework-specific adapters:
+From source:
 
 ```bash
-# For LangGraph support
-pip install agent-handoff-protocol[langgraph]
-
-# For CrewAI support
-pip install agent-handoff-protocol[crewai]
-
-# For Google ADK support
-pip install agent-handoff-protocol[adk]
-
-# For smolagents support
-pip install agent-handoff-protocol[smolagents]
-
-# Install all adapters
-pip install agent-handoff-protocol[all]
+git clone https://github.com/dakshjain-1616/agent-handoff-protocol.git
+cd agent-handoff-protocol
+python3 -m venv venv && source venv/bin/activate
+pip install -e .
+pip install pytest
+pytest
 ```
 
-## HandoffPacket Field Reference
+Optional framework extras:
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `task_id` | `str` | ✅ Yes | Unique identifier for the task |
-| `original_goal` | `str` | ✅ Yes | The original goal/objective |
-| `priority` | `Priority` | No | Task priority: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL` |
-| `confidence_score` | `float` | No | Confidence in outputs (0.0 - 1.0) |
-| `context_summary` | `str` | No | 3-5 sentence summary of progress |
-| `handoff_reason` | `str` | No | Why control is being handed off |
-| `completed_steps` | `List[CompletedStep]` | No | Steps already completed |
-| `remaining_steps` | `List[str]` | No | Steps still to do |
-| `working_memory` | `Dict[str, Any]` | No | Key-value pairs for next agent |
-| `tool_results_cache` | `Dict[str, Any]` | No | Cached tool call results |
-| `created_at` | `datetime` | Auto | Creation timestamp |
-| `updated_at` | `datetime` | Auto | Last update timestamp |
+```bash
+pip install "agent-handoff-protocol[langgraph]"
+pip install "agent-handoff-protocol[crewai]"
+pip install "agent-handoff-protocol[adk]"
+pip install "agent-handoff-protocol[smolagents]"
+pip install "agent-handoff-protocol[all]"
+```
 
-### CompletedStep Structure
+## Example
 
 ```python
-{
-    "step_name": str,      # Name of the completed step
-    "output": str,         # Output/result of the step
-    "timestamp": str,      # ISO format timestamp
-    "agent_name": str      # Agent that completed the step
-}
+from agent_handoff_protocol import (
+    HandoffPacket, Priority,
+    HandoffValidator, PacketSerializer, HandoffBroker,
+)
+
+packet = HandoffPacket(
+    task_id="blog_001",
+    original_goal="Write a blog post about multi-agent systems",
+    priority=Priority.HIGH,
+    confidence_score=0.92,
+    context_summary="Research complete. Draft outline prepared. Handing off to Writer.",
+    handoff_reason="Research phase done; drafting is Writer's responsibility.",
+    remaining_steps=["draft", "edit", "publish"],
+    working_memory={"sources": ["arxiv.org", "openai.com"]},
+)
+packet.add_completed_step("research", "Collected 12 sources", agent_name="ResearchAgent")
+
+# Validate before sending
+result = HandoffValidator().validate(packet)
+assert result.is_valid, result.errors
+
+# Serialize for an LLM prompt
+print(PacketSerializer.to_prompt_format(packet))
+
+# Or persist through the broker
+with HandoffBroker(db_path=":memory:") as broker:
+    broker.send(packet, from_agent="ResearchAgent", to_agent="WriterAgent")
+    received = broker.receive("WriterAgent")
 ```
 
-## Framework Adapters
+See [`demos/demo_full_pipeline.py`](demos/demo_full_pipeline.py) for a full
+4-agent Research -> Writer -> Editor -> Publisher pipeline.
 
-Native adapters are provided for LangGraph, CrewAI, Google ADK, and smolagents, each exposing conversions between `HandoffPacket` and the framework's native state/context/task representations.
+## Adapter Usage
+
+Every adapter exposes `to_framework(packet)` / `from_framework(state)` plus a
+framework-specific pair (`to_langgraph_state`, `from_crewai_context`, etc.).
+Missing fields are filled with sensible defaults.
+
+### LangGraph
+
+```python
+from adapters.langgraph_adapter import LangGraphAdapter
+
+adapter = LangGraphAdapter()
+state = adapter.to_langgraph_state(packet)          # dict usable as LangGraph state
+restored = adapter.from_langgraph_state(state)      # -> HandoffPacket
+```
+
+### CrewAI
+
+```python
+from adapters.crewai_adapter import CrewAIAdapter
+
+adapter = CrewAIAdapter()
+ctx = adapter.to_crewai_context(packet)
+description = adapter.create_task_description(packet)   # drop into a Crew Task
+restored = adapter.from_crewai_context(ctx)
+```
+
+### Google ADK
+
+```python
+from adapters.adk_adapter import ADKAdapter
+
+adapter = ADKAdapter()
+session_state = adapter.to_adk_session_state(packet)
+restored = adapter.from_adk_session_state(session_state)
+```
+
+### smolagents
+
+```python
+from adapters.smolagents_adapter import SmolagentsAdapter
+
+adapter = SmolagentsAdapter()
+task_input = adapter.to_smolagents_task(packet)
+prompt = adapter.create_agent_prompt(packet)        # natural-language brief
+restored = adapter.from_smolagents_task(task_input)
+```
 
 ## HandoffBroker API
 
-The `HandoffBroker` provides persistent storage and routing for handoff packets, supporting in-memory or file-based SQLite stores, send/receive, packet history, statistics, and context-manager usage.
+SQLite-backed persistence with routing, audit, and TTL support. Use
+`db_path=":memory:"` for tests, or a file path for durable storage.
 
-## 3-Agent Pipeline Example
+| Method | Purpose |
+|---|---|
+| `send(packet, from_agent, to_agent)` | Persist a packet addressed from one agent to another. Returns the assigned handoff id. |
+| `receive(agent_name)` | Return the latest pending packet addressed to `agent_name`, or `None`. Marks it delivered. |
+| `receive_with_metadata(agent_name)` | Same as `receive`, plus routing metadata. |
+| `receive_all(agent_name)` | Drain every pending packet for an agent. |
+| `get_packet_history(task_id=...)` | Full handoff timeline for a task. |
+| `get_stats()` / `stats()` | Counts by status: `total`, `pending`, `delivered`, `expired`. |
+| `purge_expired()` | Delete expired packets; returns the number removed. |
+| `get_audit_log(limit=..., event=...)` | Read the per-operation audit trail. |
+| `close()` | Close the underlying SQLite connection (also via `with` block). |
+
+Every operation is recorded in the `audit_log` table and can be pretty-printed
+with `handoff-cli audit`.
+
+## 3-Agent Pipeline Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    3-Agent Pipeline Flow                         │
+│                    3-Agent Pipeline Flow                        │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐  │
-│  │   Research   │      │    Writer    │      │    Editor    │  │
-│  │    Agent     │─────▶│    Agent     │─────▶│    Agent     │  │
-│  └──────────────┘      └──────────────┘      └──────────────┘  │
+│                                                                 │
+│  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐   │
+│  │   Research   │      │    Writer    │      │    Editor    │   │
+│  │    Agent     │─────▶│    Agent     │─────▶│    Agent     │   │
+│  └──────────────┘      └──────────────┘      └──────────────┘   │
 │         │                     │                     │           │
-│         │                     │                     │           │
-│    [Research]            [Draft]              [Final]          │
+│    [Research]            [Draft]                [Final]         │
 │         │                     │                     │           │
 │         ▼                     ▼                     ▼           │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              HandoffBroker (SQLite)                      │   │
-│  │  • Stores all handoffs                                  │   │
-│  │  • Tracks routing metadata                              │   │
-│  │  • Provides packet history                              │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │              HandoffBroker (SQLite)                       │  │
+│  │  - Stores all handoffs                                    │  │
+│  │  - Tracks routing metadata                                │  │
+│  │  - Provides packet history & audit log                    │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
-
-See `demos/demo_full_pipeline.py` for a complete working example.
-
-## Validation
-
-`HandoffValidator` supports both strict full validation (returning a result with `is_valid` and `errors`) and a quick boolean check.
-
-## Serialization
-
-`PacketSerializer` converts packets to/from JSON, dict, LLM-friendly prompt format, and compact strings.
 
 ## Development
 
 ```bash
-# Clone the repository
-git clone https://github.com/dakshjain-1616/agent-handoff-protocol.git
-cd agent-handoff-protocol
-
-# Install development dependencies
 pip install -e ".[dev]"
-
-# Run tests
 pytest tests/ -v
-
-# Run linting
-black src/ tests/
-ruff check src/ tests/
-mypy src/
-
-# Run demo
 python demos/demo_full_pipeline.py
 ```
 
-## Project Structure
-
-```
-agent-handoff-protocol/
-├── src/agent_handoff_protocol/
-│   ├── __init__.py          # Package exports
-│   ├── packet.py            # HandoffPacket model
-│   ├── validator.py         # HandoffValidator
-│   ├── serializer.py        # PacketSerializer
-│   └── broker.py            # HandoffBroker
-├── adapters/
-│   ├── __init__.py
-│   ├── langgraph_adapter.py
-│   ├── crewai_adapter.py
-│   ├── adk_adapter.py
-│   └── smolagents_adapter.py
-├── tests/
-│   ├── test_packet.py
-│   ├── test_validator.py
-│   ├── test_serializer.py
-│   ├── test_adapters.py
-│   └── test_broker.py
-├── demos/
-│   └── demo_full_pipeline.py
-├── pyproject.toml
-├── LICENSE
-└── README.md
-```
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- Inspired by the need for better inter-agent communication in multi-agent AI systems
-- Built with [Pydantic](https://docs.pydantic.dev/) for robust data validation
-- Framework adapters designed to work seamlessly with their respective ecosystems
-
-## Support
-
-- 📖 [Documentation](https://github.com/dakshjain-1616/agent-handoff-protocol/wiki)
-- 🐛 [Issue Tracker](https://github.com/dakshjain-1616/agent-handoff-protocol/issues)
-- 💬 [Discussions](https://github.com/dakshjain-1616/agent-handoff-protocol/discussions)
-
----
-
-**Made with ❤️ for the multi-agent AI community**
+MIT. See [LICENSE](LICENSE).
